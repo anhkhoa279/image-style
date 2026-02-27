@@ -1,0 +1,8 @@
+numpy>=1.24
+opencv-python>=4.8
+# Cho evaluate_fid_lpips.py (tùy chọn):
+# pytorch-fid
+# lpips
+# torch
+# torchvision
+
