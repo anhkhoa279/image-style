@@ -13,8 +13,6 @@ Repo này dùng để **tiền xử lý ảnh**, **augmentation**, và tổ ch�
 - **`scripts/oil_painting_transfer.py`**: chuyển ảnh thường → tranh sơn dầu
 - **`scripts/pipeline_oil_style.py`**: pipeline đồng nhất raw → oil → processed → augmented → output_image_style
 - **`scripts/evaluate_fid_lpips.py`**: đánh giá FID và LPIPS
-- **`docs/VISUAL_INSPECTION.md`**: hướng dẫn kiểm tra chất lượng ảnh bằng mắt
-- **`docs/DATASET_SOURCES.md`**: nguồn thu thập dataset 8 loại tranh
 
 Hiện tại bạn đang có dữ liệu ví dụ:
 
