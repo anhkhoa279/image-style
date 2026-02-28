@@ -153,3 +153,6 @@ python scripts/evaluate_fid_lpips.py --ref dataset/processed/kim_hoang --gen dat
 - **FID**: Đo độ giống giữa 2 bộ ảnh (thấp = giống hơn).
 - **LPIPS**: Đo độ giống perception giữa các cặp ảnh (thấp = giống hơn).
 - `--pair-by-index`: Ghép cặp theo thứ tự file khi tên khác nhau.
+
+
+
