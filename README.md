@@ -99,14 +99,5 @@ python scripts/evaluate_fid_lpips.py
 - **FID**: Đo độ giống giữa 2 bộ ảnh (thấp = giống hơn).
 - **LPIPS**: Đo độ giống perception giữa các cặp ảnh (thấp = giống hơn).
 
-## Tài liệu bổ sung
-
-- [docs/VISUAL_INSPECTION.md](docs/VISUAL_INSPECTION.md): Kiểm tra chất lượng ảnh theo đặc trưng nghệ thuật
-- [docs/DATASET_SOURCES.md](docs/DATASET_SOURCES.md): Nguồn thu thập dataset 8 loại tranh (Artnam, Bảo tàng Mỹ thuật...)
-
-## Thêm style mới
-
-1) Tạo thư mục ảnh gốc: `dataset/raw/<ten_style>/` và bỏ ảnh vào
-2) Thêm block gọi `process_images(...)` trong `scripts/preprocess.py` và `augment_dataset(...)` trong `scripts/augment.py`
 
 
