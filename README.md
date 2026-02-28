@@ -7,8 +7,11 @@ Repo này dùng để **tiền xử lý ảnh**, **augmentation**, và tổ ch�
 - **`dataset/raw/<style_name>/`**: ảnh gốc (nhiều định dạng)
 - **`dataset/processed/<style_name>/`**: ảnh đã resize, crop (tùy chọn), chuẩn hóa màu (tùy chọn)
 - **`dataset/augmented/<style_name>/`**: ảnh tăng cường (flip, rotation, color jitter)
+- **`dataset/output_image_style/`**: ảnh tranh sơn dầu đã qua pipeline (oil → resize/crop/color norm → augmentation), một folder đồng nhất
 - **`scripts/preprocess.py`**: resize, crop, chuẩn hóa màu
 - **`scripts/augment.py`**: Data augmentation (flip, rotation, color jitter)
+- **`scripts/oil_painting_transfer.py`**: chuyển ảnh thường → tranh sơn dầu
+- **`scripts/pipeline_oil_style.py`**: pipeline đồng nhất raw → oil → processed → augmented → output_image_style
 - **`scripts/evaluate_fid_lpips.py`**: đánh giá FID và LPIPS
 - **`docs/VISUAL_INSPECTION.md`**: hướng dẫn kiểm tra chất lượng ảnh bằng mắt
 - **`docs/DATASET_SOURCES.md`**: nguồn thu thập dataset 8 loại tranh
@@ -53,6 +56,37 @@ python scripts/augment.py
 ```
 
 Tạo ảnh tăng cường (flip ngang/dọc, xoay 90/180/270°, color jitter) từ `dataset/processed/` vào `dataset/augmented/`.
+
+## Chuyển ảnh sang tranh sơn dầu (Oil Painting Transfer)
+
+Script `oil_painting_transfer.py` chuyển ảnh thường sang tranh sơn dầu với các đặc điểm:
+- Chất liệu sơn dầu, mảng khối 3D (nét cọ rõ, impasto)
+- Tông màu ấm áp / hoài niệm, ánh sáng tinh tế
+- Kết cấu vải canvas, hiệu ứng chiều sâu
+
+```bash
+# Một ảnh
+python scripts/oil_painting_transfer.py path/to/photo.jpg -o output_oil.jpg
+
+# Cả thư mục
+python scripts/oil_painting_transfer.py dataset/raw/my_photos/ -o dataset/output_oil/ --prefix sondau
+```
+
+Tham số: `--brush-size` (5–8), `--oil-blend` (0.4–0.55), `--impasto` (0.1–0.18), `--warmth`, `--vignette`, `--no-texture`.
+
+## Pipeline đồng nhất: Raw → Tranh sơn dầu → Output_image_style
+
+Script `pipeline_oil_style.py` gộp toàn bộ vào một luồng: **raw** → **oil painting** → **resize, crop, chuẩn hóa màu** → **flip, rotation, color jitter** → lưu vào **một folder** `dataset/output_image_style/`.
+
+```bash
+# Từ thư mục gốc project (có dataset/raw/...)
+python scripts/pipeline_oil_style.py dataset/raw/son_dau -o dataset/output_image_style --prefix sondau_style
+
+# Mặc định: input=dataset/raw/son_dau, output=dataset/output_image_style
+python scripts/pipeline_oil_style.py
+```
+
+Tùy chọn: `--size 512`, `--crop`, `--color-norm`, `--no-flip-h`, `--no-flip-v`, `--no-jitter`, `--max-aug 10`.
 
 ## Đánh giá FID / LPIPS
 
