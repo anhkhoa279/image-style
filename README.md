@@ -1,158 +1,121 @@
 # Project_Art_Style
 
-Repo này dùng để **tiền xử lý ảnh**, **augmentation**, và tổ chức **dataset theo phong cách hội họa Việt Nam** (Kim Hoàng, Sơn Dầu, Đông Hồ, v.v.), phục vụ nghiên cứu nhận diện/phân loại tranh.
+Repo dùng **Deep Learning (Neural Style Transfer)** để chuyển ảnh thường sang **tranh sơn dầu**, kèm tiền xử lý và augmentation, phục vụ dataset nghiên cứu nhận diện/phân loại tranh.
+
+Toàn bộ bước chuyển style dùng **Neural Transfer** (Gatys et al., VGG19), không dùng OpenCV stylization.
 
 ## Cấu trúc thư mục
 
-- **`dataset/raw/<style_name>/`**: ảnh gốc (nhiều định dạng)
-- **`dataset/processed/<style_name>/`**: ảnh đã resize, crop (tùy chọn), chuẩn hóa màu (tùy chọn)
-- **`dataset/augmented/<style_name>/`**: ảnh tăng cường (flip, rotation, color jitter)
-- **`dataset/output_image_style/`**: ảnh tranh sơn dầu đã qua pipeline (oil → resize/crop/color norm → augmentation)
-- **`dataset/output_kimhoang/`**: ảnh tranh Kim Hoàng đã qua pipeline (kim_hoang → resize/crop/color norm → augmentation)
-- **`scripts/preprocess.py`**: resize, crop, chuẩn hóa màu
-- **`scripts/augment.py`**: Data augmentation (flip, rotation, color jitter)
-- **`scripts/oil_painting_transfer.py`**: chuyển ảnh thường → tranh sơn dầu
-- **`scripts/kim_hoang_transfer.py`**: chuyển ảnh thường → tranh Kim Hoàng (nền giấy đỏ, nét phóng khoáng)
-- **`scripts/pipeline_oil_style.py`**: pipeline raw → oil → processed → augmented → output_image_style
-- **`scripts/pipeline_kim_hoang_style.py`**: pipeline raw → Kim Hoàng → processed → augmented → output_kimhoang
-- **`scripts/neural_style_transfer.py`**: Neural Style Transfer (Deep Learning, Gatys et al.)
-- **`scripts/evaluate_fid_lpips.py`**: đánh giá FID và LPIPS
+- **`dataset/raw/son_dau/`**: ảnh gốc đầu vào
+- **`dataset/processed/son_dau/`**: ảnh đã resize, chuẩn hóa (preprocess)
+- **`dataset/augmented/son_dau/`**: ảnh augmentation từ processed
+- **`dataset/style_ref/`**: ảnh style tham chiếu (ví dụ `oil_style.jpg`) cho Neural Transfer
+- **`dataset/output_image_style/`**: ảnh đầu ra pipeline (raw → NST → resize/crop/color norm → augmentation)
 
+## Scripts
 
-Hiện tại bạn đang có dữ liệu ví dụ:
+| Script | Mô tả |
+|--------|--------|
+| `scripts/preprocess.py` | Resize, chuẩn hóa màu: raw → processed/son_dau |
+| `scripts/augment.py` | Augmentation: processed → augmented/son_dau |
+| `scripts/neural_style_transfer.py` | Neural Style Transfer (Gatys, VGG19): content + style → output |
+| `scripts/pipeline_oil_style.py` | **Pipeline chính**: raw → **NST** → resize/crop/color norm → augmentation → output_image_style |
+| `scripts/evaluate_fid_lpips.py` | Đánh giá FID và LPIPS (ref vs generated) |
 
-- `dataset/raw/son_dau/` (ảnh gốc)
-- `dataset/processed/son_dau/` (ảnh đã xử lý và đặt tên dạng `sondau_001.jpg`…)
-
-## Script `scripts/preprocess.py` làm gì?
-
-Với mỗi folder style (ví dụ `son_dau`):
-
-- Đọc từng file ảnh hợp lệ trong `dataset/raw/<style>/`
-- **Resize** về kích thước mục tiêu (mặc định `512x512`)
-- Chuẩn hoá ảnh để ghi được **JPG** (xử lý ảnh grayscale / có kênh alpha)
-- Lưu sang `dataset/processed/<style>/` với tên theo mẫu: `<prefix>_001.jpg`, `<prefix>_002.jpg`, ...
-
-Trong code đang cấu hình sẵn 2 style:
-
-- `kim_hoang` (nếu chưa có thư mục/ảnh thì script sẽ cảnh báo)
-- `son_dau`
-
-## Cách chạy
-
-### 1) Cài môi trường
+## Cài đặt
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-### 2) Chạy preprocess (từ thư mục gốc project)
+Cần: `torch`, `torchvision`, `opencv-contrib-python`, `numpy`, `Pillow`. Đánh giá thêm: `pytorch-fid`, `lpips`.
+
+## Luồng chính: Pipeline sơn dầu (Neural Transfer)
+
+Pipeline dùng **Neural Style Transfer** (Deep Learning) để chuyển mỗi ảnh raw sang phong cách sơn dầu, sau đó resize/crop/chuẩn hóa màu và augmentation.
+
+### 1. Ảnh style tham chiếu
+
+Đặt **một ảnh tranh sơn dầu** làm style reference:
+
+- **Mặc định**: `dataset/style_ref/oil_style.jpg`  
+- Hoặc có ảnh trong `dataset/processed/son_dau/` (script sẽ lấy ảnh đầu tiên nếu chưa có `style_ref`).
+- Hoặc chỉ định bằng `--style path/to/tranh_son_dau.jpg`.
+
+### 2. Chạy pipeline
+
+```bash
+# Mặc định: input=dataset/raw/son_dau, output=dataset/output_image_style
+python scripts/pipeline_oil_style.py
+
+# Tùy chỉnh
+python scripts/pipeline_oil_style.py dataset/raw/son_dau -o dataset/output_image_style --prefix sondau_style
+```
+
+Tham số NST (Deep Learning):
+
+- `--style`: ảnh style (mặc định: dataset/style_ref/oil_style.jpg hoặc processed/son_dau)
+- `--nst-size`: kích thước ảnh khi chạy NST (512; giảm xuống 256 nếu không có GPU)
+- `--nst-steps`: số bước tối ưu (300)
+- `--style-weight`, `--content-weight`: trọng số loss
+
+Tham số hậu xử lý:
+
+- `--size`: kích thước resize cuối (512)
+- `--crop`, `--color-norm`: bật center crop / chuẩn hóa màu
+- `--no-flip-h`, `--no-flip-v`, `--no-jitter`: tắt flip / color jitter
+- `--max-aug`: số ảnh augmentation tối đa mỗi ảnh gốc (10)
+
+### 3. Chỉ chạy Neural Transfer (một ảnh hoặc thư mục)
+
+Nếu chỉ cần NST không qua pipeline:
+
+```bash
+# Một ảnh
+python scripts/neural_style_transfer.py path/to/photo.jpg path/to/style.jpg -o output.jpg
+
+# Cả thư mục (cùng một ảnh style)
+python scripts/neural_style_transfer.py dataset/raw/son_dau dataset/style_ref/oil_style.jpg -o dataset/out_nst --prefix nst
+```
+
+Tham số: `--size`, `--steps`, `--style-weight`, `--content-weight`.
+
+## Preprocess và Augmentation (tùy chọn)
+
+Preprocess (raw → processed):
 
 ```bash
 python scripts/preprocess.py
 ```
 
-## Data Augmentation
+Augmentation (processed → augmented):
 
 ```bash
 python scripts/augment.py
 ```
 
-Tạo ảnh tăng cường (flip ngang/dọc, xoay 90/180/270°, color jitter) từ `dataset/processed/` vào `dataset/augmented/`.
-
-## Chuyển ảnh sang tranh sơn dầu (Oil Painting Transfer)
-
-Script `oil_painting_transfer.py` chuyển ảnh thường sang tranh sơn dầu với các đặc điểm:
-- Chất liệu sơn dầu, mảng khối 3D (nét cọ rõ, impasto)
-- Tông màu ấm áp / hoài niệm, ánh sáng tinh tế
-- Kết cấu vải canvas, hiệu ứng chiều sâu
-
-```bash
-# Một ảnh
-python scripts/oil_painting_transfer.py path/to/photo.jpg -o output_oil.jpg
-
-# Cả thư mục
-python scripts/oil_painting_transfer.py dataset/raw/my_photos/ -o dataset/output_oil/ --prefix sondau
-```
-
-Tham số: `--brush-size` (5–8), `--oil-blend` (0.4–0.55), `--impasto` (0.1–0.18), `--warmth`, `--vignette`, `--no-texture`.
-
-## Pipeline đồng nhất: Raw → Tranh sơn dầu → Output_image_style
-
-Script `pipeline_oil_style.py` gộp toàn bộ vào một luồng: **raw** → **oil painting** → **resize, crop, chuẩn hóa màu** → **flip, rotation, color jitter** → lưu vào **một folder** `dataset/output_image_style/`.
-
-```bash
-# Từ thư mục gốc project (có dataset/raw/...)
-python scripts/pipeline_oil_style.py dataset/raw/son_dau -o dataset/output_image_style --prefix sondau_style
-
-# Mặc định: input=dataset/raw/son_dau, output=dataset/output_image_style
-python scripts/pipeline_oil_style.py
-```
-
-Tùy chọn: `--size 512`, `--crop`, `--color-norm`, `--no-flip-h`, `--no-flip-v`, `--no-jitter`, `--max-aug 10`.
-
-## Chuyển ảnh sang tranh Kim Hoàng (Kim Hoàng Transfer)
-
-Script `kim_hoang_transfer.py` chuyển ảnh thường sang tranh Kim Hoàng với các đặc điểm:
-- **Nền giấy đỏ (giấy điều)**: tranh in trên giấy màu đỏ, còn gọi "tranh Đỏ"
-- **Nét vẽ phóng khoáng, tự nhiên, khỏe khoắn, mộc mạc**
-
-```bash
-# Một ảnh
-python scripts/kim_hoang_transfer.py path/to/photo.jpg -o output_kimhoang.jpg
-
-# Cả thư mục
-python scripts/kim_hoang_transfer.py dataset/raw/my_photos/ -o dataset/output_kimhoang/ --prefix kimhoang
-```
-
-Tham số: `--red-tint` (0.2–0.5), `--edge-strength`, `--edge-thickness`, `--saturation`, `--warmth`, `--no-texture`.
-
-## Pipeline Kim Hoàng: Raw → Tranh Kim Hoàng → Output_kimhoang
-
-Tương tự pipeline sơn dầu: **raw** → **Kim Hoàng transfer** → **resize, crop, chuẩn hóa màu** → **flip, rotation, color jitter** → `dataset/output_kimhoang/`.
-
-```bash
-# Từ thư mục gốc project
-python scripts/pipeline_kim_hoang_style.py dataset/raw/kim_hoang -o dataset/output_kimhoang --prefix kimhoang_style
-
-# Mặc định: input=dataset/raw/kim_hoang, output=dataset/output_kimhoang
-python scripts/pipeline_kim_hoang_style.py
-```
-
-## Neural Style Transfer (Deep Learning)
-
-Script `neural_style_transfer.py` dùng **Neural Transfer** (Gatys et al.) với VGG19 để chuyển phong cách nghệ thuật từ ảnh style sang ảnh content. Tham khảo: [PyTorch Neural Style Tutorial](https://docs.pytorch.org/tutorials/advanced/neural_style_tutorial.html).
-
-Cần: `pip install torch torchvision` (đã có trong requirements.txt)
-
-```bash
-# Một ảnh: content + style → output
-python scripts/neural_style_transfer.py path/to/photo.jpg path/to/style_painting.jpg -o output_styled.jpg
-
-# Cả thư mục (mỗi ảnh content dùng chung 1 ảnh style)
-python scripts/neural_style_transfer.py dataset/raw/son_dau dataset/processed/son_dau/sondau_001.jpg -o dataset/output_neural_style --prefix nst_oil
-```
-
-Tham số: `--size` (512 mặc định, giảm nếu không có GPU), `--steps` (300), `--style-weight` (1e6), `--content-weight` (1).
-
 ## Đánh giá FID / LPIPS
 
-Cần: `pip install pytorch-fid lpips torch torchvision`
+So sánh ảnh reference (processed/son_dau) với ảnh sinh ra (output_image_style):
 
 ```bash
-# Sơn dầu (mặc định)
 python scripts/evaluate_fid_lpips.py
-
-# Kim Hoàng
-python scripts/evaluate_fid_lpips.py --style kim_hoang
-
-# Tùy chỉnh thư mục
-python scripts/evaluate_fid_lpips.py --ref dataset/processed/kim_hoang --gen dataset/output_kimhoang --pair-by-index
 ```
 
-- **FID**: Đo độ giống giữa 2 bộ ảnh (thấp = giống hơn).
-- **LPIPS**: Đo độ giống perception giữa các cặp ảnh (thấp = giống hơn).
-- `--pair-by-index`: Ghép cặp theo thứ tự file khi tên khác nhau.
+Tùy chỉnh thư mục:
 
+```bash
+python scripts/evaluate_fid_lpips.py --ref dataset/processed/son_dau --gen dataset/output_image_style --pair-by-index
+```
 
+Cần: `pip install pytorch-fid lpips` (đã có torch/torchvision).
 
+- **FID**: độ giống phân bố 2 bộ ảnh (thấp = giống hơn).
+- **LPIPS**: độ giống perception từng cặp ảnh (thấp = giống hơn).
+- `--pair-by-index`: ghép cặp theo thứ tự file khi tên khác nhau.
+
+## Tóm tắt
+
+- **Chỉ tranh sơn dầu**, không dùng Kim Hoàng hay style khác trong repo.
+- **Chuyển style 100% bằng Deep Learning**: Neural Style Transfer (Gatys et al., VGG19).
+- Pipeline: **raw → NST → resize/crop/color norm → augmentation → output_image_style**.

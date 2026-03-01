@@ -96,20 +96,13 @@ if __name__ == "__main__":
         "--ref",
         type=str,
         default=None,
-        help="Thư mục ảnh style gốc (reference)",
+        help="Thư mục ảnh reference (processed/son_dau)",
     )
     parser.add_argument(
         "--gen",
         type=str,
         default=None,
-        help="Thư mục ảnh sinh ra (generated)",
-    )
-    parser.add_argument(
-        "--style",
-        type=str,
-        choices=["son_dau", "kim_hoang"],
-        default="son_dau",
-        help="Style mặc định: son_dau hoặc kim_hoang",
+        help="Thư mục ảnh sinh ra (output_image_style)",
     )
     parser.add_argument(
         "--pair-by-index",
@@ -126,21 +119,17 @@ if __name__ == "__main__":
         ref = Path(args.ref).resolve()
         gen = Path(args.gen).resolve()
     else:
-        if args.style == "kim_hoang":
-            ref = base / "dataset" / "processed" / "kim_hoang"
-            gen = base / "dataset" / "output_kimhoang"
-        else:
-            ref = base / "dataset" / "processed" / "son_dau"
-            gen = base / "dataset" / "output_image_style"
+        ref = base / "dataset" / "processed" / "son_dau"
+        gen = base / "dataset" / "output_image_style"
 
     if not ref.exists():
-        print(f"Chạy preprocess/pipeline trước để có {ref}")
+        print(f"Chạy preprocess trước để có {ref}")
         sys.exit(1)
     if not gen.exists():
         print(f"Chạy pipeline trước để có {gen}")
         sys.exit(1)
 
-    print(f"Style: {args.style} | Ref: {ref} | Gen: {gen}")
+    print(f"Ref: {ref} | Gen: {gen}")
     print("\nFID (2 thư mục giống nhau -> gần 0):")
     try:
         fid = run_fid(ref, gen)

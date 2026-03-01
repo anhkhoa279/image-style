@@ -106,8 +106,3 @@ if __name__ == "__main__":
         output_folder="dataset/augmented/son_dau",
         prefix="sondau_aug",
     )
-    augment_dataset(
-        input_folder="dataset/processed/kim_hoang",
-        output_folder="dataset/augmented/kim_hoang",
-        prefix="kimhoang_aug",
-    )

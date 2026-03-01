@@ -103,19 +103,8 @@ def process_images(
     print(f"-> HOÀN THÀNH. Tổng cộng: {count - 1} ảnh được lưu tại {out_dir}")
 
 if __name__ == "__main__":
-    # use_crop: center crop trước resize (giữ tỉ lệ khung hình quan trọng)
-    # use_color_norm: chuẩn hóa màu theo mean/std ImageNet
     kw = dict(use_crop=False, use_color_norm=False)
 
-    # 1. Xử lý ảnh Kim Hoàng
-    process_images(
-        input_folder="dataset/raw/kim_hoang",
-        output_folder="dataset/processed/kim_hoang",
-        prefix="kimhoang",
-        **kw,
-    )
-
-    # 2. Xử lý ảnh Sơn Dầu
     process_images(
         input_folder="dataset/raw/son_dau",
         output_folder="dataset/processed/son_dau",

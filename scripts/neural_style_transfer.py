@@ -196,6 +196,53 @@ def tensor_to_pil(tensor):
     return unloader(image)
 
 
+def tensor_to_numpy_rgb(tensor):
+    """Chuyển tensor (1,C,H,W) về numpy RGB (H,W,3) 0-255."""
+    img = tensor.cpu().clone().squeeze(0).clamp(0, 1)
+    arr = img.permute(1, 2, 0).numpy()
+    return (arr * 255).astype("uint8")
+
+
+def transfer_single_to_array(
+    content_path,
+    style_path,
+    imsize=512,
+    num_steps=300,
+    style_weight=1_000_000,
+    content_weight=1,
+    device=None,
+    verbose=False,
+):
+    """
+    Neural Transfer một ảnh, trả về numpy RGB (H,W,3) 0-255 (để pipeline xử lý tiếp).
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    cnn = vgg19(weights=VGG19_Weights.DEFAULT).features.eval().to(device)
+    mean = torch.tensor(CNN_NORMALIZATION_MEAN).to(device)
+    std = torch.tensor(CNN_NORMALIZATION_STD).to(device)
+
+    content_img = image_loader(content_path, imsize, device)
+    style_img = image_loader(style_path, imsize, device)
+
+    if content_img.size() != style_img.size():
+        style_img = transforms.functional.resize(
+            style_img, content_img.shape[-2:], antialias=True
+        )
+
+    input_img = content_img.clone()
+    output = run_style_transfer(
+        cnn, mean, std,
+        content_img, style_img, input_img,
+        num_steps=num_steps,
+        style_weight=style_weight,
+        content_weight=content_weight,
+        verbose=verbose,
+    )
+    return tensor_to_numpy_rgb(output)
+
+
 def transfer_single(
     content_path,
     style_path,
