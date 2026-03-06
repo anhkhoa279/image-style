@@ -1,30 +1,103 @@
-import os
+"""
+Preprocess ảnh bằng PyTorch / torchvision (Deep Learning stack).
+Raw → Resize, CenterCrop, Normalize → processed.
+
+Thay thế OpenCV bằng torchvision.transforms để toàn bộ pipeline dùng Deep Learning.
+"""
+
 from pathlib import Path
 
-import cv2
-import numpy as np
+import torch
+from PIL import Image
+from torchvision import transforms
 
-def center_crop(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    h, w = img.shape[:2]
+# ImageNet normalization (dùng cho VGG và chuẩn hóa màu)
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def center_crop(img: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+    """Center crop tensor (C,H,W) hoặc (1,C,H,W)."""
+    if img.dim() == 4:
+        img = img.squeeze(0)
+    c, h, w = img.shape
     target_h, target_w = size
     if h < target_h or w < target_w:
         scale = max(target_h / h, target_w / w)
         new_h, new_w = int(h * scale), int(w * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        h, w = img.shape[:2]
+        img = transforms.functional.resize(
+            img.unsqueeze(0), (new_h, new_w), antialias=True
+        ).squeeze(0)
+        h, w = new_h, new_w
     top = max(0, (h - target_h) // 2)
     left = max(0, (w - target_w) // 2)
-    return img[top : top + target_h, left : left + target_w]
+    return img[:, top : top + target_h, left : left + target_w]
 
 
-def normalize_color(img: np.ndarray, mean: tuple[float, float, float] | None = None, std: tuple[float, float, float] | None = None) -> np.ndarray:
-    mean = mean or (0.485 * 255, 0.456 * 255, 0.406 * 255)
-    std = std or (0.229 * 255, 0.224 * 255, 0.225 * 255)
-    mean = np.array(mean, dtype=np.float32).reshape(1, 1, 3)
-    std = np.array(std, dtype=np.float32).reshape(1, 1, 3)
-    out = (img.astype(np.float32) - mean) / std
-    out = (out - out.min()) / (out.max() - out.min() + 1e-8) * 255
-    return np.clip(out, 0, 255).astype(np.uint8)
+def normalize_color_tensor(img: torch.Tensor) -> torch.Tensor:
+    """
+    Chuẩn hóa màu theo ImageNet, rồi scale về [0,1] để lưu ảnh.
+    Input: tensor (C,H,W) hoặc (1,C,H,W), range [0,1].
+    """
+    mean = torch.tensor(IMAGENET_MEAN, device=img.device).view(-1, 1, 1)
+    std = torch.tensor(IMAGENET_STD, device=img.device).view(-1, 1, 1)
+    out = (img - mean) / std
+    out = (out - out.min()) / (out.max() - out.min() + 1e-8)
+    return out.clamp(0, 1)
+
+
+def get_preprocess_transforms(
+    target_size: tuple[int, int] = (512, 512),
+    use_crop: bool = False,
+) -> transforms.Compose:
+    """
+    Tạo pipeline transforms PyTorch cho preprocess.
+    use_crop: Resize (shortest edge) rồi CenterCrop để giữ tỷ lệ.
+    """
+    tfs = []
+    if use_crop:
+        # Resize shortest edge = target, rồi center crop
+        tfs.append(transforms.Resize(max(target_size), antialias=True))
+        tfs.append(transforms.CenterCrop(target_size))
+    else:
+        tfs.append(transforms.Resize(target_size, antialias=True))
+    tfs.append(transforms.ToTensor())
+    return transforms.Compose(tfs)
+
+
+def process_image_tensor(
+    tensor: torch.Tensor,
+    target_size: tuple[int, int],
+    use_crop: bool,
+    use_color_norm: bool,
+) -> torch.Tensor:
+    """
+    Resize, crop, chuẩn hóa màu cho tensor (1,C,H,W) từ NST.
+    Dùng trong pipeline - toàn bộ PyTorch.
+    """
+    if use_crop:
+        # Scale up nếu cần rồi center crop
+        c, h, w = tensor.shape[1], tensor.shape[2], tensor.shape[3]
+        th, tw = target_size
+        if h < th or w < tw:
+            scale = max(th / h, tw / w)
+            new_h, new_w = int(h * scale), int(w * scale)
+            tensor = transforms.functional.resize(
+                tensor, (new_h, new_w), antialias=True
+            )
+        tensor = transforms.functional.center_crop(tensor, target_size)
+    tensor = transforms.functional.resize(tensor, target_size, antialias=True)
+    if use_color_norm:
+        tensor = normalize_color_tensor(tensor)
+    return tensor
+
+
+def tensor_to_pil_save(tensor: torch.Tensor, path: Path) -> None:
+    """Lưu tensor (1,C,H,W) [0,1] thành file ảnh."""
+    img = tensor.cpu().clone().squeeze(0).clamp(0, 1)
+    pil = transforms.ToPILImage()(img)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pil.save(str(path))
 
 
 def process_images(
@@ -34,80 +107,74 @@ def process_images(
     prefix="img",
     use_crop: bool = False,
     use_color_norm: bool = False,
+    device=None,
 ):
+    """
+    Preprocess thư mục ảnh bằng PyTorch/torchvision.
+    Raw → Resize/Crop/Normalize → processed.
+    """
     in_dir = Path(input_folder)
     out_dir = Path(output_folder)
 
-    # Kiểm tra
     if not in_dir.exists():
-        print(f"CẢNH BÁO: Không tìm thấy thư mục {in_dir}")
-        print("-> Bạn hãy tạo thư mục và bỏ ảnh vào đó trước nhé!")
+        print(f"WARNING: Input folder not found: {in_dir}")
+        print("-> Create the folder and put images inside first.")
         return
+
+    if device is None:
+        device = torch.device("cpu")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     count = 1
     valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-    print(f"\n--- Đang xử lý thư mục: {in_dir} ---")
+    print(f"\n--- Processing folder (PyTorch): {in_dir} ---")
 
     files = sorted([p for p in in_dir.iterdir() if p.is_file()])
     if len(files) == 0:
-        print("-> Thư mục này đang TRỐNG. Hãy tải ảnh về bỏ vào đây.")
+        print("-> Folder is empty.")
         return
+
+    t = get_preprocess_transforms(target_size, use_crop)
 
     for path in files:
         if path.suffix.lower() not in valid_extensions:
             continue
 
-        img = None
         try:
-            data = np.fromfile(str(path), dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-        except Exception:
-            img = None
-
-        if img is None:
-            img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-            if img is None:
-                continue
-
-        # Chuẩn hoá số kênh để ghi JPG
-        if len(img.shape) == 2:  # grayscale
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        elif img.shape[2] == 4:  # BGRA
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-        # Crop (center crop trước resize nếu bật)
-        if use_crop:
-            try:
-                img = center_crop(img, target_size)
-            except Exception:
-                pass
-
-        # Resize
-        try:
-            img_resized = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
+            img = Image.open(path).convert("RGB")
         except Exception:
             continue
 
-        # Chuẩn hóa màu
+        tensor = t(img).unsqueeze(0).to(device)
+
         if use_color_norm:
-            img_resized = normalize_color(img_resized)
+            tensor = normalize_color_tensor(tensor)
 
         new_filename = f"{prefix}_{count:03d}.jpg"
         save_path = out_dir / new_filename
-        cv2.imwrite(str(save_path), img_resized)
+        tensor_to_pil_save(tensor, save_path)
         count += 1
 
-    print(f"-> HOÀN THÀNH. Tổng cộng: {count - 1} ảnh được lưu tại {out_dir}")
+    print(f"-> Done. Total: {count - 1} images saved to {out_dir}")
+
 
 if __name__ == "__main__":
-    kw = dict(use_crop=False, use_color_norm=False)
-
+    # Preprocess cho tranh sơn dầu
     process_images(
         input_folder="dataset/raw/son_dau",
         output_folder="dataset/processed/son_dau",
         prefix="sondau",
-        **kw,
+        use_crop=False,
+        use_color_norm=False,
+    )
+
+    # Preprocess cho tranh sơn mài (nếu có thư mục raw/son_mai)
+    process_images(
+        input_folder="dataset/raw/son_mai",
+        output_folder="dataset/processed/son_mai",
+        prefix="sonmai",
+        use_crop=False,
+        use_color_norm=False,
     )

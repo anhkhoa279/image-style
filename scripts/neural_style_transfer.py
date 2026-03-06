@@ -63,11 +63,23 @@ class Normalization(nn.Module):
 
     def __init__(self, mean, std):
         super().__init__()
-        self.mean = torch.tensor(mean).view(-1, 1, 1)
-        self.std = torch.tensor(std).view(-1, 1, 1)
+        m = mean if isinstance(mean, torch.Tensor) else torch.tensor(mean, dtype=torch.float32)
+        s = std if isinstance(std, torch.Tensor) else torch.tensor(std, dtype=torch.float32)
+        self.mean = m.view(-1, 1, 1)
+        self.std = s.view(-1, 1, 1)
 
     def forward(self, img):
         return (img - self.mean.to(img.device)) / self.std.to(img.device)
+
+
+def total_variation_loss(img: torch.Tensor) -> torch.Tensor:
+    """
+    Total Variation loss để giảm nhiễu và làm stroke sạch hơn.
+    img: (1,C,H,W)
+    """
+    dh = torch.abs(img[:, :, 1:, :] - img[:, :, :-1, :]).mean()
+    dw = torch.abs(img[:, :, :, 1:] - img[:, :, :, :-1]).mean()
+    return dh + dw
 
 
 def get_style_model_and_losses(
@@ -137,6 +149,7 @@ def run_style_transfer(
     num_steps=300,
     style_weight=1_000_000,
     content_weight=1,
+    tv_weight: float = 0.0,
     verbose=True,
 ):
     """Chạy Neural Style Transfer bằng L-BFGS."""
@@ -159,14 +172,23 @@ def run_style_transfer(
         model(input_img)
         style_score = sum(sl.loss for sl in style_losses) * style_weight
         content_score = sum(cl.loss for cl in content_losses) * content_weight
-        loss = style_score + content_score
+        tv_score = total_variation_loss(input_img) * float(tv_weight) if tv_weight else 0.0
+        loss = style_score + content_score + tv_score
         loss.backward()
 
         run[0] += 1
         if verbose and run[0] % 50 == 0:
-            print(f"  Step {run[0]}: Style Loss={style_score.item():.4f} Content Loss={content_score.item():.4f}")
+            if tv_weight:
+                tv_val = tv_score.item() if isinstance(tv_score, torch.Tensor) else float(tv_score)
+                print(
+                    f"  Step {run[0]}: Style={style_score.item():.4f} Content={content_score.item():.4f} TV={tv_val:.6f}"
+                )
+            else:
+                print(
+                    f"  Step {run[0]}: Style={style_score.item():.4f} Content={content_score.item():.4f}"
+                )
 
-        return style_score + content_score
+        return loss
 
     while run[0] <= num_steps:
         optimizer.step(closure)
@@ -203,6 +225,104 @@ def tensor_to_numpy_rgb(tensor):
     return (arr * 255).astype("uint8")
 
 
+def transfer_single_to_tensor(
+    content_path,
+    style_path,
+    imsize=512,
+    num_steps=300,
+    style_weight=1_000_000,
+    content_weight=1,
+    tv_weight: float = 0.0,
+    multiscale: bool = False,
+    scales: list[int] | None = None,
+    device=None,
+    verbose=False,
+):
+    """
+    Neural Transfer một ảnh, trả về tensor (1,C,H,W) trên device (để pipeline xử lý tiếp bằng PyTorch).
+    Theo tutorial: https://docs.pytorch.org/tutorials/advanced/neural_style_tutorial.html
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    cnn = vgg19(weights=VGG19_Weights.DEFAULT).features.eval().to(device)
+    mean = torch.tensor(CNN_NORMALIZATION_MEAN, device=device)
+    std = torch.tensor(CNN_NORMALIZATION_STD, device=device)
+
+    if not multiscale:
+        content_img = image_loader(content_path, imsize, device)
+        style_img = image_loader(style_path, imsize, device)
+
+        if content_img.size() != style_img.size():
+            style_img = transforms.functional.resize(
+                style_img, content_img.shape[-2:], antialias=True
+            )
+
+        input_img = content_img.clone()
+        output = run_style_transfer(
+            cnn,
+            mean,
+            std,
+            content_img,
+            style_img,
+            input_img,
+            num_steps=num_steps,
+            style_weight=style_weight,
+            content_weight=content_weight,
+            tv_weight=tv_weight,
+            verbose=verbose,
+        )
+        return output
+
+    # Multi-scale optimization (thường ra texture sạch và "sơn dầu" hơn)
+    if scales is None:
+        s1 = max(96, imsize // 4)
+        s2 = max(192, imsize // 2)
+        scales = [s1, s2, imsize]
+    scales = sorted({int(s) for s in scales if int(s) > 0})
+
+    prev = None
+    # Chia bước cho từng scale (ưu tiên scale lớn nhiều bước hơn)
+    if len(scales) == 1:
+        steps_each = [num_steps]
+    else:
+        base = max(1, num_steps // (len(scales) + 1))
+        steps_each = [base] * (len(scales) - 1) + [num_steps - base * (len(scales) - 1)]
+
+    for s, steps in zip(scales, steps_each):
+        if verbose:
+            print(f"  [multiscale] size={s}, steps={steps}")
+
+        content_img = image_loader(content_path, s, device)
+        style_img = image_loader(style_path, s, device)
+        if content_img.size() != style_img.size():
+            style_img = transforms.functional.resize(
+                style_img, content_img.shape[-2:], antialias=True
+            )
+
+        if prev is None:
+            input_img = content_img.clone()
+        else:
+            # Resize tạo non-leaf tensor; detach để LBFGS optimize được
+            input_img = transforms.functional.resize(prev, (s, s), antialias=True).detach()
+
+        prev = run_style_transfer(
+            cnn,
+            mean,
+            std,
+            content_img,
+            style_img,
+            input_img,
+            num_steps=int(steps),
+            style_weight=style_weight,
+            content_weight=content_weight,
+            tv_weight=tv_weight,
+            verbose=verbose,
+        )
+
+    return prev
+
+
 def transfer_single_to_array(
     content_path,
     style_path,
@@ -215,30 +335,16 @@ def transfer_single_to_array(
 ):
     """
     Neural Transfer một ảnh, trả về numpy RGB (H,W,3) 0-255 (để pipeline xử lý tiếp).
+    Gọi transfer_single_to_tensor rồi chuyển sang numpy.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    cnn = vgg19(weights=VGG19_Weights.DEFAULT).features.eval().to(device)
-    mean = torch.tensor(CNN_NORMALIZATION_MEAN).to(device)
-    std = torch.tensor(CNN_NORMALIZATION_STD).to(device)
-
-    content_img = image_loader(content_path, imsize, device)
-    style_img = image_loader(style_path, imsize, device)
-
-    if content_img.size() != style_img.size():
-        style_img = transforms.functional.resize(
-            style_img, content_img.shape[-2:], antialias=True
-        )
-
-    input_img = content_img.clone()
-    output = run_style_transfer(
-        cnn, mean, std,
-        content_img, style_img, input_img,
-        num_steps=num_steps,
-        style_weight=style_weight,
-        content_weight=content_weight,
-        verbose=verbose,
+    output = transfer_single_to_tensor(
+        content_path, style_path,
+        imsize=imsize, num_steps=num_steps,
+        style_weight=style_weight, content_weight=content_weight,
+        tv_weight=0.0,
+        multiscale=False,
+        scales=None,
+        device=device, verbose=verbose,
     )
     return tensor_to_numpy_rgb(output)
 
@@ -277,6 +383,7 @@ def transfer_single(
         num_steps=num_steps,
         style_weight=style_weight,
         content_weight=content_weight,
+        tv_weight=0.0,
     )
 
     out_img = tensor_to_pil(output)
@@ -333,6 +440,23 @@ def main():
         help="Trọng số content loss (mặc định: 1)",
     )
     parser.add_argument(
+        "--tv-weight",
+        type=float,
+        default=0.0,
+        help="Total Variation weight (reduce noise), e.g. 1e-6",
+    )
+    parser.add_argument(
+        "--multiscale",
+        action="store_true",
+        help="Run multi-scale optimization (often better texture)",
+    )
+    parser.add_argument(
+        "--scales",
+        type=str,
+        default=None,
+        help="Comma-separated scales for multiscale, e.g. 128,256,512",
+    )
+    parser.add_argument(
         "--prefix",
         type=str,
         default="nst",
@@ -344,7 +468,7 @@ def main():
     style_path = Path(args.style)
 
     if not style_path.exists():
-        print(f"LỖI: Không tìm thấy ảnh style: {style_path}")
+        print(f"ERROR: Style image not found: {style_path}")
         sys.exit(1)
 
     try:
@@ -356,20 +480,33 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
+    scales = [int(s.strip()) for s in args.scales.split(",")] if args.scales else None
+
     if content_path.is_file():
         out = args.output or content_path.parent / f"{content_path.stem}_styled.jpg"
         print(f"Content: {content_path}")
         print(f"Style: {style_path}")
         print(f"Output: {out}")
-        transfer_single(
-            content_path, style_path, out,
+        output = transfer_single_to_tensor(
+            content_path,
+            style_path,
             imsize=args.size,
             num_steps=args.steps,
             style_weight=args.style_weight,
             content_weight=args.content_weight,
+            tv_weight=args.tv_weight,
+            multiscale=args.multiscale,
+            scales=scales,
             device=device,
+            verbose=True,
         )
-        print(f"-> Đã lưu tại {out}")
+        out_img = tensor_to_pil(output)
+        out = Path(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+            out = out.with_suffix(".jpg")
+        out_img.save(out)
+        print(f"-> Saved to {out}")
 
     elif content_path.is_dir():
         out_dir = Path(args.output) if args.output else content_path.parent / "output_neural_style"
@@ -379,10 +516,10 @@ def main():
         files = sorted([f for f in content_path.iterdir() if f.suffix.lower() in valid_ext])
 
         if not files:
-            print(f"LỖI: Không có ảnh trong {content_path}")
+            print(f"ERROR: No images in {content_path}")
             sys.exit(1)
 
-        print(f"Content folder: {content_path} ({len(files)} ảnh)")
+        print(f"Content folder: {content_path} ({len(files)} images)")
         print(f"Style: {style_path}")
         print(f"Output: {out_dir}")
 
@@ -390,18 +527,24 @@ def main():
             out_name = f"{args.prefix}_{i+1:05d}.jpg"
             out_path = out_dir / out_name
             print(f"\n[{i+1}/{len(files)}] {f.name} -> {out_name}")
-            transfer_single(
-                f, style_path, out_path,
+            output = transfer_single_to_tensor(
+                f,
+                style_path,
                 imsize=args.size,
                 num_steps=args.steps,
                 style_weight=args.style_weight,
                 content_weight=args.content_weight,
+                tv_weight=args.tv_weight,
+                multiscale=args.multiscale,
+                scales=scales,
                 device=device,
+                verbose=False,
             )
-        print(f"\n-> Đã lưu {len(files)} ảnh tại {out_dir}")
+            tensor_to_pil(output).save(out_path)
+        print(f"\n-> Saved {len(files)} images to {out_dir}")
 
     else:
-        print(f"LỖI: Không tìm thấy {content_path}")
+        print(f"ERROR: Not found: {content_path}")
         sys.exit(1)
 
 

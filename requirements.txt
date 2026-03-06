@@ -1,11 +1,9 @@
+# Neural Style Transfer + Preprocess + Augmentation - toàn bộ PyTorch/torchvision
+# Tham khảo: https://docs.pytorch.org/tutorials/advanced/neural_style_tutorial.html
 numpy>=1.24
-# opencv-contrib-python thay thế opencv-python, cung cấp thêm module xphoto cho oil painting
-opencv-contrib-python>=4.8
-# Neural Style Transfer (scripts/neural_style_transfer.py)
 torch>=2.0
 torchvision>=0.15
 Pillow>=9.0
 # Cho evaluate_fid_lpips.py (tùy chọn):
 # pytorch-fid
 # lpips
-

@@ -2,7 +2,9 @@
 Pipeline: Raw → Neural Style Transfer (sơn dầu) → Resize/Crop/Chuẩn hóa màu → Augmentation
 → Lưu vào dataset/output_image_style/
 
-Toàn bộ bước chuyển style dùng Deep Learning (Neural Transfer, Gatys et al.).
+Toàn bộ dùng Deep Learning (PyTorch/torchvision):
+- Neural Transfer: Gatys et al., VGG19 (https://docs.pytorch.org/tutorials/advanced/neural_style_tutorial.html)
+- Preprocess & Augmentation: torchvision.transforms
 """
 
 import argparse
@@ -13,51 +15,55 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-import cv2
-import numpy as np
+import torch
+import torchvision.transforms.functional as TF
 
-from augment import (
-    color_jitter,
-    flip_horizontal,
-    flip_vertical,
-    rotate,
-)
-from neural_style_transfer import transfer_single_to_array
-from preprocess import center_crop, normalize_color
+from augment import get_augmented_variants, tensor_to_pil
+from neural_style_transfer import transfer_single_to_tensor
+from preprocess import process_image_tensor
 
 VALID_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_TARGET_SIZE = (512, 512)
 
-# Ảnh style mặc định cho sơn dầu (nếu không truyền --style)
+
+def _apply_sonmai_grading(t: torch.Tensor) -> torch.Tensor:
+    """
+    Color grading nhẹ cho tranh sơn mài:
+    - tăng contrast
+    - giảm saturation xanh, nhấn mạnh đỏ/vàng
+    """
+    x = t.clamp(0, 1)
+    # contrast / gamma mạnh hơn để tạo cảm giác bóng, nhiều lớp
+    x = TF.adjust_contrast(x, 1.5)
+    x = TF.adjust_gamma(x, gamma=0.85)
+    # tách kênh
+    r = x[:, 0:1, :, :]
+    g = x[:, 1:2, :, :]
+    b = x[:, 2:3, :, :]
+    # nhấn đỏ / vàng, giảm xanh / lam
+    r = (r * 1.25 + 0.04).clamp(0, 1)
+    g = (g * 0.85).clamp(0, 1)
+    b = (b * 0.8).clamp(0, 1)
+    x = torch.cat([r, g, b], dim=1)
+    # saturation hơi giảm để màu trầm, sang trọng hơn
+    x = TF.adjust_saturation(x, 0.85)
+    return x.clamp(0, 1)
+
+
 def _default_style_path():
     base = _SCRIPT_DIR.parent
-    ref = base / "dataset" / "style_ref" / "oil_style.jpg"
-    if ref.exists():
-        return str(ref)
+    ref_dir = base / "dataset" / "style_ref"
+    if ref_dir.exists():
+        for name in ("oil_style.jpg", "oil_style.jpeg", "oil_style.png", "oil_style.webp"):
+            ref = ref_dir / name
+            if ref.exists():
+                return str(ref)
     processed = base / "dataset" / "processed" / "son_dau"
     if processed.exists():
         first = sorted(processed.glob("*.jpg"))[:1]
         if first:
             return str(first[0])
     return None
-
-
-def process_image(
-    img: np.ndarray,
-    target_size: tuple[int, int],
-    use_crop: bool,
-    use_color_norm: bool,
-) -> np.ndarray:
-    """Resize, crop (tùy chọn), chuẩn hóa màu (tùy chọn)."""
-    if use_crop:
-        try:
-            img = center_crop(img, target_size)
-        except Exception:
-            pass
-    img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
-    if use_color_norm:
-        img = normalize_color(img)
-    return img
 
 
 def run_pipeline(
@@ -78,11 +84,16 @@ def run_pipeline(
     nst_steps: int = 300,
     style_weight: float = 1e6,
     content_weight: float = 1.0,
+    tv_weight: float = 0.0,
+    multiscale: bool = False,
+    nst_scales: list[int] | None = None,
     device=None,
+    mode: str | None = None,
     verbose: bool = True,
 ) -> None:
     """
     Pipeline: raw → Neural Style Transfer (DL) → resize/crop/color norm → augmentation → output.
+    Toàn bộ xử lý bằng PyTorch/torchvision.
     """
     in_dir = Path(input_folder)
     out_dir = Path(output_folder)
@@ -90,84 +101,87 @@ def run_pipeline(
 
     style_path = style_image or _default_style_path()
     if not style_path or not Path(style_path).exists():
-        print("LỖI: Chưa có ảnh style. Đặt ảnh tại dataset/style_ref/oil_style.jpg hoặc dùng --style path/to/tranh_son_dau.jpg")
+        print("ERROR: Missing style image. Put one at dataset/style_ref/oil_style.jpg or pass --style path/to/style.jpg")
         return
 
     if not in_dir.exists():
-        print(f"CẢNH BÁO: Không tìm thấy thư mục {in_dir}")
+        print(f"WARNING: Input folder not found: {in_dir}")
         return
 
     files = sorted(
         [p for p in in_dir.iterdir() if p.is_file() and p.suffix.lower() in VALID_EXT]
     )
     if not files:
-        print("-> Thư mục rỗng hoặc không có ảnh hợp lệ.")
+        print("-> Empty folder or no supported images.")
         return
 
     rotations = rotations or [90.0, 180.0, 270.0]
-    np.random.seed(42)
+    torch.manual_seed(42)
 
-    print(f"--- Pipeline (Neural Transfer): {in_dir} → {out_dir} ---")
+    print(f"--- Pipeline (Neural Transfer): {in_dir} -> {out_dir} ---")
     print(f"    Style: {style_path}")
     print(f"    NST: size={nst_imsize}, steps={nst_steps}")
     print(f"    Resize {target_size}, crop={use_crop}, color_norm={use_color_norm}")
-    print(f"    Augmentation: flip, rotate {rotations}, jitter (max {max_aug_per_image}/ảnh)")
+    if tv_weight:
+        print(f"    TV weight: {tv_weight}")
+    if multiscale:
+        print(f"    Multi-scale: {nst_scales if nst_scales else 'auto'}")
+    print(f"    Augmentation: flip, rotate {rotations}, jitter (max {max_aug_per_image}/image)")
 
     global_count = 1
     for idx, path in enumerate(files):
         if verbose:
             print(f"\n[{idx + 1}/{len(files)}] NST: {path.name}")
 
-        # 1. Neural Style Transfer (Deep Learning)
+        # 1. Neural Style Transfer (Deep Learning - Gatys et al.)
         try:
-            rgb = transfer_single_to_array(
+            output_tensor = transfer_single_to_tensor(
                 path,
                 style_path,
                 imsize=nst_imsize,
                 num_steps=nst_steps,
                 style_weight=style_weight,
                 content_weight=content_weight,
+                tv_weight=tv_weight,
+                multiscale=multiscale,
+                scales=nst_scales,
                 device=device,
                 verbose=verbose,
             )
-            oil_img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         except Exception as e:
-            print(f"  Lỗi NST: {e}")
+            print(f"  NST error: {e}")
             continue
 
-        # 2. Resize, crop, chuẩn hóa màu
-        processed = process_image(
-            oil_img,
+        # 2. Resize, crop, chuẩn hóa màu (PyTorch/torchvision)
+        processed = process_image_tensor(
+            output_tensor,
             target_size=target_size,
             use_crop=use_crop,
             use_color_norm=use_color_norm,
         )
 
-        # 3. Augmentation
-        augs: list[np.ndarray] = [processed]
-        if do_flip_h:
-            augs.append(flip_horizontal(processed))
-        if do_flip_v:
-            augs.append(flip_vertical(processed))
-        for angle in rotations:
-            augs.append(rotate(processed, angle))
-        if do_color_jitter:
-            for _ in range(2):
-                augs.append(
-                    color_jitter(
-                        processed,
-                        jitter_strength,
-                        jitter_strength,
-                        jitter_strength,
-                    )
-                )
+        # Sơn mài: thêm grading màu đặc trưng (đỏ/đen/vàng, contrast cao hơn)
+        if mode == "sonmai":
+            processed = _apply_sonmai_grading(processed)
 
-        for aug_img in augs[:max_aug_per_image]:
+        # 3. Augmentation (PyTorch/torchvision)
+        augs = get_augmented_variants(
+            processed,
+            do_flip_h=do_flip_h,
+            do_flip_v=do_flip_v,
+            rotations=rotations,
+            do_color_jitter=do_color_jitter,
+            jitter_strength=jitter_strength,
+            max_per_image=max_aug_per_image,
+        )
+
+        for aug_tensor in augs:
             out_path = out_dir / f"{prefix}_{global_count:05d}.jpg"
-            cv2.imwrite(str(out_path), aug_img)
+            pil = tensor_to_pil(aug_tensor)
+            pil.save(str(out_path))
             global_count += 1
 
-    print(f"\n-> HOÀN THÀNH. Tổng {global_count - 1} ảnh tại {out_dir}")
+    print(f"\n-> Done. Total {global_count - 1} images at {out_dir}")
 
 
 def main():
@@ -191,7 +205,7 @@ def main():
         "--style",
         type=str,
         default=None,
-        help="Ảnh style sơn dầu tham chiếu (mặc định: dataset/style_ref/oil_style.jpg hoặc processed/son_dau)",
+        help="Ảnh style tham chiếu (mặc định: dataset/style_ref/oil_style.* hoặc processed/son_dau)",
     )
     parser.add_argument(
         "--prefix",
@@ -235,20 +249,93 @@ def main():
         default=1.0,
         help="Trọng số content loss NST (mặc định: 1)",
     )
+    parser.add_argument(
+        "--tv-weight",
+        type=float,
+        default=0.0,
+        help="Total Variation weight (giảm nhiễu/bệt), vd: 1e-6",
+    )
+    parser.add_argument(
+        "--multiscale",
+        action="store_true",
+        help="Chạy NST multi-scale (thường chất lượng sơn dầu tốt hơn)",
+    )
+    parser.add_argument(
+        "--nst-scales",
+        type=str,
+        default=None,
+        help="Danh sách scale NST, vd: 128,256,512 (mặc định: auto khi bật --multiscale)",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=["oil", "sonmai"],
+        default=None,
+        help="Preset tham số: 'oil' (sơn dầu), 'sonmai' (sơn mài Việt). Ghi đè một số tham số NST & output.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Ít log hơn")
 
     args = parser.parse_args()
 
-    import torch
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not args.quiet:
         print(f"Device: {device}")
 
+    # Parse scales từ string
+    nst_scales = [int(s.strip()) for s in args.nst_scales.split(",")] if args.nst_scales else None
+
+    # Khởi tạo giá trị từ args
+    style_image = args.style
+    style_weight = args.style_weight
+    content_weight = args.content_weight
+    tv_weight = args.tv_weight
+    multiscale = args.multiscale
+    prefix = args.prefix
+    mode: str | None = None
+
+    # Mặc định tách thư mục theo preset nếu output không được override
+    output_root = Path(args.output)
+    if args.output == "dataset/output_image_style":
+        # Sơn dầu -> dataset/output_image_style/sondau
+        # Sơn mài -> dataset/output_image_style/sonmai
+        if args.preset == "sonmai":
+            output_root = output_root / "sonmai"
+        else:
+            output_root = output_root / "sondau"
+
+    # Preset cho tranh sơn mài (phong cách Việt)
+    if args.preset == "sonmai":
+        base = _SCRIPT_DIR.parent
+        ref_dir = base / "dataset" / "style_ref"
+        if style_image is None and ref_dir.exists():
+            for name in (
+                "sonmai_1.png",
+                "sonmai_1.jpg",
+                "sonmai_1.jpeg",
+                "sonmai_1.webp",
+            ):
+                p = ref_dir / name
+                if p.exists():
+                    style_image = str(p)
+                    break
+        # Tham số gợi ý cho sơn mài: giữ khối rõ, texture mạnh, bề mặt mịn
+        style_weight = 1.2e6
+        content_weight = 8.0
+        tv_weight = 2e-6
+        multiscale = True
+        if nst_scales is None:
+            nst_scales = [256, 384, 512]
+        if prefix == "sondau_style":
+            prefix = "sonmai_style"
+        mode = "sonmai"
+    elif args.preset == "oil":
+        mode = "oil"
+
     run_pipeline(
         input_folder=args.input,
-        output_folder=args.output,
-        style_image=args.style,
-        prefix=args.prefix,
+        output_folder=str(output_root),
+        style_image=style_image,
+        prefix=prefix,
         target_size=(args.size, args.size),
         use_crop=args.crop,
         use_color_norm=args.color_norm,
@@ -258,10 +345,14 @@ def main():
         max_aug_per_image=args.max_aug,
         nst_imsize=args.nst_size,
         nst_steps=args.nst_steps,
-        style_weight=args.style_weight,
-        content_weight=args.content_weight,
+        style_weight=style_weight,
+        content_weight=content_weight,
+        tv_weight=tv_weight,
+        multiscale=multiscale,
+        nst_scales=nst_scales,
         device=device,
         verbose=not args.quiet,
+        mode=mode,
     )
 
 

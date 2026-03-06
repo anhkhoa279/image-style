@@ -28,7 +28,7 @@ Toàn bộ bước chuyển style dùng **Neural Transfer** (Gatys et al., VGG19
 python -m pip install -r requirements.txt
 ```
 
-Cần: `torch`, `torchvision`, `opencv-contrib-python`, `numpy`, `Pillow`. Đánh giá thêm: `pytorch-fid`, `lpips`.
+Cần: `torch`, `torchvision`, `numpy`, `Pillow`. Đánh giá thêm: `pytorch-fid`, `lpips`. Toàn bộ dùng PyTorch/torchvision (không dùng OpenCV).
 
 ## Luồng chính: Pipeline sơn dầu (Neural Transfer)
 
@@ -38,18 +38,24 @@ Pipeline dùng **Neural Style Transfer** (Deep Learning) để chuyển mỗi �
 
 Đặt **một ảnh tranh sơn dầu** làm style reference:
 
-- **Mặc định**: `dataset/style_ref/oil_style.jpg`  
-- Hoặc có ảnh trong `dataset/processed/son_dau/` (script sẽ lấy ảnh đầu tiên nếu chưa có `style_ref`).
+- **Mặc định**: `dataset/style_ref/oil_style.jpg` (hoặc `.png/.jpeg/.webp`)  
 - Hoặc chỉ định bằng `--style path/to/tranh_son_dau.jpg`.
+
+Gợi ý để ra đúng “sơn dầu Việt / mảng khối 3D”: dùng **ảnh style là tranh sơn dầu thật** (có vệt cọ, khối sáng-tối rõ). Nếu dùng ảnh chụp bình thường làm style thì kết quả sẽ giống “lọc mờ” hơn là chất liệu sơn dầu.
 
 ### 2. Chạy pipeline
 
 ```bash
-# Mặc định: input=dataset/raw/son_dau, output=dataset/output_image_style
-python scripts/pipeline_oil_style.py
+# Mặc định (sơn dầu): input=dataset/raw/son_dau, output=dataset/output_image_style
+python scripts/pipeline_oil_style.py --preset oil
 
-# Tùy chỉnh
-python scripts/pipeline_oil_style.py dataset/raw/son_dau -o dataset/output_image_style --prefix sondau_style
+# Tùy chỉnh (sơn dầu)
+python scripts/pipeline_oil_style.py dataset/raw/son_dau -o dataset/output_image_style --prefix sondau_style --preset oil
+
+# Preset tranh sơn mài (phong cách Việt)
+python scripts/pipeline_oil_style.py dataset/raw/son_dau ^
+  --preset sonmai ^
+  --style dataset/style_ref/sonmai_1.png
 ```
 
 Tham số NST (Deep Learning):
@@ -58,6 +64,10 @@ Tham số NST (Deep Learning):
 - `--nst-size`: kích thước ảnh khi chạy NST (512; giảm xuống 256 nếu không có GPU)
 - `--nst-steps`: số bước tối ưu (300)
 - `--style-weight`, `--content-weight`: trọng số loss
+- `--tv-weight`: Total Variation weight (giảm nhiễu/bệt), ví dụ `1e-6`
+- `--multiscale`: chạy NST multi-scale (thường ra texture sơn dầu sạch hơn)
+- `--nst-scales`: nếu bật multiscale, có thể set `128,256,512` (mặc định auto)
+- `--preset`: `oil` (sơn dầu) hoặc `sonmai` (tranh sơn mài, tự set tham số & prefix phù hợp)
 
 Tham số hậu xử lý:
 
